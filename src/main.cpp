@@ -34,6 +34,7 @@
 static String tube_text("M4011");
 
 // Logging period in milliseconds, recommended value 15000-60000.
+#define CPM_LOG_PERIOD_VERY_FAST 5000
 #define CPM_LOG_PERIOD_FAST 15000
 #define CPM_LOG_PERIOD_NORMAL 30000
 #define CPM_LOG_PERIOD_SLOW 60000
@@ -134,6 +135,11 @@ void onButtonDoubleClick()
 
   switch (log_period)
   {
+    case CPM_LOG_PERIOD_VERY_FAST:
+    log_period = CPM_LOG_PERIOD_FAST;
+    text = "FAST";
+    break;
+
   case CPM_LOG_PERIOD_FAST:
     log_period = CPM_LOG_PERIOD_NORMAL;
     text = "NORMAL";
@@ -150,8 +156,8 @@ void onButtonDoubleClick()
     break;
 
   case CPM_LOG_PERIOD_VERY_SLOW:
-    log_period = CPM_LOG_PERIOD_FAST;
-    text = "FAST";
+    log_period = CPM_LOG_PERIOD_VERY_FAST;
+    text = "VERY FAST";
     break;
   }
 
