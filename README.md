@@ -11,7 +11,7 @@ Functionality:
  - 4 update speeds: Fast (15 sec),  Normal (30 sec), Slow (1 min), Very Slow (2 min)
 
 
-![Geiger Kit](./images/RadiationD - v1.1.jpg)
+![Geiger Kit](./images/RadiationD-v1.1.jpg)
 
 ![D-Duino](./images/D-Duino.jpg)
 
