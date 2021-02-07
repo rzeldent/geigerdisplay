@@ -35,7 +35,7 @@ static String tube_text("M4011");
 
 // Logging period in milliseconds, recommended value 15000-60000.
 #define CPM_LOG_PERIOD_FAST 15000
-#define CPM_LOG_PERIOD_MEDIUM 30000
+#define CPM_LOG_PERIOD_NORMAL 30000
 #define CPM_LOG_PERIOD_SLOW 60000
 #define CPM_LOG_PERIOD_VERY_SLOW 120000
 
@@ -75,7 +75,7 @@ enum display_mode_t
   display_info
 };
 
-display_mode_t display_mode = display_cpm;
+display_mode_t display_mode = display_ush_graph_avg;
 bool redraw;
 
 // ISR pulse from Geiger
@@ -135,11 +135,11 @@ void onButtonDoubleClick()
   switch (log_period)
   {
   case CPM_LOG_PERIOD_FAST:
-    log_period = CPM_LOG_PERIOD_MEDIUM;
-    text = "MEDIUM";
+    log_period = CPM_LOG_PERIOD_NORMAL;
+    text = "NORMAL";
     break;
 
-  case CPM_LOG_PERIOD_MEDIUM:
+  case CPM_LOG_PERIOD_NORMAL:
     log_period = CPM_LOG_PERIOD_SLOW;
     text = "SLOW";
     break;
@@ -156,13 +156,17 @@ void onButtonDoubleClick()
   }
 
   display.clear();
-  display.drawString(0, 0, "Interval: " + text);
-  display.drawString(0, 20, String(log_period / 1000) + " seconds");
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(MAX_ROW / 2, 0, "Update speed");
+  display.drawString(MAX_ROW / 2, 20, text);
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(MAX_ROW / 2, 40, "Every " + String(log_period / 1000) + " seconds");
   display.display();
 
   last_time_cpm_calculated = millis();
   impulses = 0;
-  history.clear();
+  //  history.clear();
 }
 
 void setup()
@@ -179,13 +183,15 @@ void setup()
   // Show start screen
   display.clear();
   display.setFont(ArialMT_Plain_16);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
   display.drawString(0, 0, "Geiger");
   display.drawString(0, 16, "Display");
-  display.drawXbm(128 - 32, 0, 32, 32, radiation_icon);
+  display.drawXbm(128 - 32, 2, 32, 32, radiation_icon);
 
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
   display.setFont(ArialMT_Plain_10);
-  display.drawString(0, 40, "Copyright (c) 2021");
-  display.drawString(0, 52, "Rene Zeldenthuis");
+  display.drawString(MAX_ROW / 2, 40, "Copyright (c) 2021");
+  display.drawString(MAX_ROW / 2, 52, "Rene Zeldenthuis");
   display.display();
 
   // Link the onButtonClick function to be called on a click event.
@@ -255,58 +261,67 @@ void loop()
     {
     case display_cpm_graph_max:
       display.setFont(ArialMT_Plain_10);
+      display.setTextAlignment(TEXT_ALIGN_LEFT);
       display.drawString(0, 0, cpm_text + ": " + String(cpm) + " " + max_text + ": " + String(max_cpm));
       display_graph(max_cpm);
       break;
 
     case display_ush_graph_max:
       display.setFont(ArialMT_Plain_10);
+      display.setTextAlignment(TEXT_ALIGN_LEFT);
       display.drawString(0, 0, ush_text + ": " + String(cpm * CPM_USH_CONVERSION) + " " + max_text + ": " + String(max_cpm * CPM_USH_CONVERSION));
       display_graph(max_cpm);
       break;
 
     case display_cpm_graph_avg:
       display.setFont(ArialMT_Plain_10);
+      display.setTextAlignment(TEXT_ALIGN_LEFT);
       display.drawString(0, 0, cpm_text + ": " + String(cpm) + " " + avg_text + ": " + String(avg_cpm));
       display_graph(max_cpm);
       break;
 
     case display_ush_graph_avg:
       display.setFont(ArialMT_Plain_10);
+      display.setTextAlignment(TEXT_ALIGN_LEFT);
       display.drawString(0, 0, ush_text + ": " + String(cpm * CPM_USH_CONVERSION) + " " + avg_text + ": " + String(avg_cpm * CPM_USH_CONVERSION));
       display_graph(max_cpm);
       break;
 
     case display_cpm:
       display.setFont(ArialMT_Plain_16);
-      display.drawString(0, 0, cpm_text + ":");
+      display.setTextAlignment(TEXT_ALIGN_CENTER);
+      display.drawString(MAX_ROW / 2, 0, cpm_text);
       display.setFont(ArialMT_Plain_24);
-      display.drawString(0, 24, String(cpm));
+      display.drawString(MAX_ROW / 2, 24, String(cpm));
       break;
 
     case display_ush:
       display.setFont(ArialMT_Plain_16);
-      display.drawString(0, 0, ush_text + ":");
+      display.setTextAlignment(TEXT_ALIGN_CENTER);
+      display.drawString(MAX_ROW / 2, 0, ush_text);
       display.setFont(ArialMT_Plain_24);
-      display.drawString(0, 24, String(cpm * CPM_USH_CONVERSION));
+      display.drawString(MAX_ROW / 2, 24, String(cpm * CPM_USH_CONVERSION));
       break;
 
     case display_cpm_avg:
       display.setFont(ArialMT_Plain_16);
-      display.drawString(0, 0, cpm_text + " " + avg_text + ":");
+      display.setTextAlignment(TEXT_ALIGN_CENTER);
+      display.drawString(MAX_ROW / 2, 0, cpm_text + " " + avg_text);
       display.setFont(ArialMT_Plain_24);
-      display.drawString(0, 24, String(avg_cpm));
+      display.drawString(MAX_ROW / 2, 24, String(avg_cpm));
       break;
 
     case display_ush_avg:
       display.setFont(ArialMT_Plain_16);
-      display.drawString(0, 0, ush_text + " " + avg_text + ":");
+      display.setTextAlignment(TEXT_ALIGN_CENTER);
+      display.drawString(MAX_ROW / 2, 0, ush_text + " " + avg_text);
       display.setFont(ArialMT_Plain_24);
-      display.drawString(0, 24, String(avg_cpm * CPM_USH_CONVERSION));
+      display.drawString(MAX_ROW / 2, 24, String(avg_cpm * CPM_USH_CONVERSION));
       break;
 
     case display_info:
       display.setFont(ArialMT_Plain_16);
+      display.setTextAlignment(TEXT_ALIGN_LEFT);
       display.drawString(0, 0, "Tube: " + tube_text);
       display.drawXbm(48, 20, 32, 32, radiation_icon);
       display.setFont(ArialMT_Plain_10);
@@ -315,5 +330,6 @@ void loop()
     }
 
     display.display();
+    redraw = false;
   }
 }
