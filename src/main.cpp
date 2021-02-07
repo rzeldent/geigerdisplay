@@ -246,7 +246,7 @@ void setup()
 String format_value(float value)
 {
   // No decimal places
-  if (value >= 1)
+  if (value >= 0)
     return String(value, 0);
 
   if (value < 0.001f)
