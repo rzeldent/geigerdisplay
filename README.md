@@ -1,5 +1,7 @@
-# geigerdisplay
-ESP8266 software to enhance a Geiger Counter kit with a OLED display
+# Geiger Display
+ESP8266 software to enhance a Geiger Counter kit with a OLED display.
+
+Ready for use in PlatformIO (PIO) [https://platformio.org/](https://platformio.org/).
 
 Functionality:
  - Simple pin input, interrupt driven
