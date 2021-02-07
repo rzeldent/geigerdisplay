@@ -73,6 +73,8 @@ enum display_mode_t
   display_ush,
   display_cpm_avg,
   display_ush_avg,
+  display_cpm_act_log_gauge,
+  display_ush_act_log_gauge,
   display_cpm_max_log_gauge,
   display_ush_max_log_gauge,
   display_cpm_avg_log_gauge,
@@ -122,6 +124,14 @@ void onButtonClick()
     break;
 
   case display_ush_avg:
+    display_mode = display_cpm_act_log_gauge;
+    break;
+
+  case display_cpm_act_log_gauge:
+    display_mode = display_ush_act_log_gauge;
+    break;
+
+  case display_ush_act_log_gauge:
     display_mode = display_cpm_max_log_gauge;
     break;
 
@@ -298,6 +308,10 @@ void display_meter(const std::vector<float> &scale, const String &units, const S
     display.drawString(x_center - r_text * tick_cos, y_center - r_text * tick_sin, format_value(tick));
   }
 
+  // Draw value
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.drawString(x_center, OLED_MAX_CY - 10, format_value(value));
+
   // Draw the gauge
   if (value < min_tick)
     value = min_tick;
@@ -308,10 +322,6 @@ void display_meter(const std::vector<float> &scale, const String &units, const S
   // Convert to radians (PI is half a circle)
   auto const value_radians = log_value / log_scale_minmax * PI;
   display.drawLine(x_center, y_center, x_center - r_gauge * cos(value_radians), y_center - r_gauge * sin(value_radians));
-
-  // Draw value
-  display.setTextAlignment(TEXT_ALIGN_CENTER);
-  display.drawString(x_center, OLED_MAX_CY - 10, format_value(value));
 
   display.display();
 }
@@ -367,6 +377,7 @@ void loop()
 
     static const String cpm_text("CPM");
     static const String ush_text("uS/h");
+    static const String act_text("Act");
     static const String max_text("Max");
     static const String avg_text("Avg");
 
@@ -441,6 +452,14 @@ void loop()
       display.drawString(OLED_MAX_CX / 2, 0, ush_text + " " + avg_text);
       display.setFont(ArialMT_Plain_24);
       display.drawString(OLED_MAX_CX / 2, 24, format_value(avg_cpm * CPM_USH_CONVERSION));
+      break;
+
+    case display_cpm_act_log_gauge:
+      display_meter(scale_cpm, cpm_text, act_text, cpm);
+      break;
+
+    case display_ush_act_log_gauge:
+      display_meter(scale_ush, ush_text, act_text, cpm * CPM_USH_CONVERSION);
       break;
 
     case display_cpm_max_log_gauge:
