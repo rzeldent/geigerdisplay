@@ -7,12 +7,15 @@ Functionality:
  - Simple pin input, interrupt driven
  - CPM (Counts per Minute) or µS/h (Micro Sieverts per hour)
  - Display a graph of previous counts
+ - Log gauge CPM or µS/h and average / max
  - Average- or maximum CPM or µS/h
- - 4 update speeds: Fast (15 sec),  Normal (30 sec), Slow (1 min), Very Slow (2 min)
+ - 4 update speeds: Very fast (5 sec), Fast (15 sec),  Normal (30 sec), Slow (1 min), Very Slow (2 min)
 
 
 ![Geiger Kit](./images/RadiationD-v1.1.jpg)
 
-![D-Duino](./images/D-Duino.jpg)
+![D-Duino](./images/D-Duino_CPM.jpg)
+
+![D-Duino](./images/D-Duino_LOG_USH.jpg)
 
 
