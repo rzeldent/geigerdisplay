@@ -11,12 +11,26 @@
 
 #include "radiation_icon.h"
 
+#include <DNSServer.h>
+#include <ESP8266mDNS.h>
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+
+#include "LittleFS.h"
+
+#include <vector>
+#include <tuple>
+
 // Inputs / outpunts
 #define GPIO_OUT_SDA D1
 #define GPIO_OUT_SCL D2
 
 #define GPIO_IN_GEIGER D7
 #define GPIO_IN_BUTTON D3
+
+// Display settings 128x64 OLED
+#define OLED_MAX_CX 128
+#define OLED_MAX_CY 64
 
 // CPM => uS/h
 //#define CPM_USH_CONVERSION	0.006315	// SBM20
@@ -36,9 +50,10 @@
 #define TEXT_TUBE "GM Tube: "
 
 #define TEXT_CPM "CPM"
-#define TEX_USH "uS/h"
-#define TEX_MAX "Max"
-#define TEX_AVG "Avg"
+#define TEXT_USH "uS/h"
+#define TEXT_MAX "Max"
+#define TEXT_AVG "Avg"
+#define TEXT_TOTAL "Total exposure"
 
 // Logging period in milliseconds, recommended value 15000-60000.
 #define CPM_LOG_PERIOD_VERY_FAST 5000
@@ -51,19 +66,30 @@
 #define CPM_PERIOD 60000
 
 // Number of impulses
-volatile unsigned long impulses;
+volatile unsigned long long impulses;
+unsigned long long last_impulses;
+
 // Last calculation
 unsigned long last_time_cpm_calculated;
 // CPM calculation interval
 unsigned long log_period = CPM_LOG_PERIOD_FAST;
 // CPM
 unsigned long cpm;
-// CPM history
-std::vector<unsigned long> history;
 
-// Display settings 128x64 OLED
-#define OLED_MAX_CX 128
-#define OLED_MAX_CY 64
+#define MAX_HISTORY_REST 1000
+std::vector<std::tuple<unsigned long, unsigned long long>> history;
+
+#define MAX_HISTORY_DISPLAY OLED_MAX_CX
+std::vector<unsigned long> history_cpm;
+float avg_cpm;
+unsigned long max_cpm;
+
+// Webserver
+#define WIFI_SSID "M4011"
+#define WIFI_PASSWORD ""
+
+DNSServer dnsServer;
+AsyncWebServer server(80);
 
 // Create display(Adr, SDA-pin, SCL-pin)
 SSD1306 display(0x3c, GPIO_OUT_SDA, GPIO_OUT_SCL); // GPIO 5 = D1, GPIO 4 = D2
@@ -86,6 +112,7 @@ enum display_mode_t
   display_ush_max_log_gauge,
   display_cpm_avg_log_gauge,
   display_ush_avg_log_gauge,
+  display_total_s,
   display_info
 };
 
@@ -155,6 +182,10 @@ void onButtonClick()
     break;
 
   case display_ush_avg_log_gauge:
+    display_mode = display_total_s;
+    break;
+
+  case display_total_s:
     display_mode = display_info;
     break;
 
@@ -210,18 +241,33 @@ void onButtonDoubleClick()
   display.display();
 
   last_time_cpm_calculated = millis();
-  impulses = 0;
+  last_impulses = impulses;
+}
+
+char *ul64toa(uint64_t value)
+{
+  static char result[21];
+  memset(result, 0, sizeof(result));
+  while (value)
+  {
+    memmove(&result[1], result, sizeof(result) - 1);
+    result[0] = '0' + value % 10;
+    value /= 10;
+  }
+
+  return result;
 }
 
 void setup()
 {
   // put your setup code here, to run once:
+  WiFi.mode(WIFI_AP);
 
   // Start Serial
   Serial.begin(115200);
 
-  // Wifi off
-  WiFi.mode(WIFI_OFF);
+  if (!LittleFS.begin())
+    Serial.println("LITTLEFS Mount Failed");
 
   // Start Display
   display.init();
@@ -248,29 +294,100 @@ void setup()
   // Define external interrupts
   pinMode(GPIO_IN_GEIGER, INPUT);
   attachInterrupt(digitalPinToInterrupt(GPIO_IN_GEIGER), tube_impulse, FALLING);
+
+  // Wifi Access Point mode
+  if (WiFi.softAP(WIFI_SSID, WIFI_PASSWORD))
+    Serial.println("Creating access point failed");
+
+  dnsServer.start(53, "*", WiFi.softAPIP());
+  MDNS.addService("http", "tcp", 80);
+
+  server.onNotFound([](AsyncWebServerRequest *request) {
+    request->redirect("/");
+  });
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(LittleFS, "/index.html", "text/html");
+  });
+  server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(LittleFS, "/favicon.ico", "image/x-icon");
+  });
+  server.on("/jquery-3.5.1.min.js", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(LittleFS, "/jquery-3.5.1.min.js", "text/javascript");
+  });
+  server.on("/bootstrap.min.css", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(LittleFS, "/bootstrap.min.css", "text/css");
+  });
+  server.on("/q", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // Return the REST response
+    auto json = "{cpm_to_ush:" + String(CPM_USH_CONVERSION, 10) + "," +
+                "counts:[";
+    for (auto it = history.begin(); it != history.end(); ++it)
+    {
+      if (it != history.begin())
+        json += ",";
+
+      json += "{time:" + String(std::get<0>(*it) / 1000) + ",count:" + ul64toa(std::get<1>(*it)) + "}";
+    }
+    json += "]}";
+    Serial.println(json);
+    request->send(200, "application/json", json);
+  });
+
+  server.begin();
 }
 
-String format_value(float value)
+String format_value(const float value)
 {
   // No decimal places
   if (value >= 1)
     return String(value, 0);
-
   if (value < 0.001f)
     return String(value, 4);
-
   if (value < 0.01f)
     return String(value, 3);
-
   if (value < 0.1f)
     return String(value, 2);
-
   return String(value, 1);
+}
+
+String format_si(const double value)
+{
+  if (value == 0.0)
+    return "0";
+  auto value_abs = fabs(value);
+  if (value_abs < 1E-9)
+    return String(value * 1E9, 2) + "p";
+  if (value_abs < 1E-6)
+    return String(value * 1E9, 2) + "n";
+  if (value_abs < 1E-3)
+    return String(value * 1E6, 2) + "u";
+  if (value_abs < 0)
+    return String(value * 1E3, 2) + "m";
+  if (value_abs < 1E3)
+    return String(value, 2);
+  if (value_abs < 1E6)
+    return String(value / 1E3, 2) + "M";
+  if (value_abs < 1E9)
+    return String(value / 1E6, 2) + "G";
+  if (value_abs < 1E12)
+    return String(value / 1E9, 2) + "T";
+  return "NaN";
+}
+
+String format_d_h_m_s(ulong seconds)
+{
+  auto days = seconds / (60 * 60 * 24);
+  seconds %= (60 * 60 * 24);
+  auto hours = seconds / (60 * 60);
+  seconds %= 60 * 60;
+  auto minutes = seconds / 60;
+  seconds %= 60;
+  return String(days) + " " + (hours < 10 ? "0" : "") + String(hours) + ((minutes < 10 ? ":0" : ":") + String(minutes) + (seconds < 10 ? ":0" : ":") + String(seconds));
 }
 
 void display_meter(const std::vector<float> &scale, const char *units, const char *type, float value)
 {
-  // x_center is a little bit (2px) to the left to accomodate large values on the right
+  // x_center is a little bit off (2px) to the left to accomodate large values on the right
   const auto x_center = OLED_MAX_CX / 2 - 2;
   const auto y_center = OLED_MAX_CY - 11;
   const auto r = OLED_MAX_CX / 2 - 25;
@@ -335,13 +452,13 @@ void display_meter(const std::vector<float> &scale, const char *units, const cha
 
 void display_history_graph(unsigned long max_cpm)
 {
-  if (history.size())
+  if (history_cpm.size())
   {
     // Display a history graph. First line reserved for text
     const float max_height = (OLED_MAX_CY - 10) - 1;
-    const auto cpm_adjust = max_cpm ? max_height / max_cpm : 0.0f;
+    const auto cpm_adjust = max_cpm ? max_height / max_cpm : 0.0;
     int16_t x = 0;
-    for (auto it : history)
+    for (auto it : history_cpm)
     {
       // Draw from the bottom up
       display.drawLine(x, OLED_MAX_CY, x, OLED_MAX_CY - it * cpm_adjust);
@@ -354,6 +471,9 @@ void loop()
 {
   // put your main code here, to run repeatedly:
 
+  // Wifi / Web
+  dnsServer.processNextRequest();
+
   // keep watching the push button
   button.tick();
 
@@ -361,15 +481,33 @@ void loop()
   auto now = millis();
   if (now - last_time_cpm_calculated > log_period)
   {
-    last_time_cpm_calculated = now;
-    cpm = impulses * CPM_PERIOD / log_period;
-    impulses = 0;
+    // Make sure not updated while calculating
+    noInterrupts();
+    auto impulses_diff = impulses - last_impulses;
+    last_impulses = impulses;
+    interrupts();
 
-    // Update history
-    if (history.size() >= OLED_MAX_CX)
+    last_time_cpm_calculated = now;
+    cpm = impulses_diff * CPM_PERIOD / log_period;
+
+    // Update histories
+    history.insert(history.begin(), std::tuple<unsigned long, unsigned long long>{now, last_impulses});
+    if (history.size() > MAX_HISTORY_REST)
       history.pop_back();
 
-    history.insert(history.begin(), cpm);
+    history_cpm.insert(history_cpm.begin(), cpm);
+    if (history_cpm.size() > MAX_HISTORY_DISPLAY)
+      history_cpm.pop_back();
+
+    // Calculate average
+    const auto history_oldest = history.back();
+    const auto impulses = last_impulses - std::get<1>(history_oldest);
+    const auto milli_seconds = now - std::get<0>(history_oldest);
+    avg_cpm = milli_seconds ? impulses * CPM_PERIOD / milli_seconds : 0.0f;
+
+    // Update maximum CPM
+    if (cpm > max_cpm)
+      max_cpm = cpm;
 
     Serial.println(cpm);
 
@@ -378,9 +516,8 @@ void loop()
 
   if (redraw)
   {
+    redraw = false;
     display.clear();
-    auto avg_cpm = std::accumulate(history.begin(), history.end(), 0.0f) / history.size();
-    auto max_cpm = *std::max_element(history.begin(), history.end());
 
     static const std::vector<float> scale_cpm = {10.0f, 20.0f, 30.0f, 50.0f, 200.0f, 300.0f, 500.0f, 1000.0f};
     static const std::vector<float> scale_ush = {0.1f, 0.2f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 20.0f, 50.0f, 100.0f};
@@ -392,16 +529,16 @@ void loop()
       display.setTextAlignment(TEXT_ALIGN_LEFT);
       display.drawString(0, 0, String(TEXT_CPM ": ") + String(cpm));
       display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, String(TEX_MAX ": ") + String(max_cpm));
+      display.drawString(OLED_MAX_CX, 0, String(TEXT_MAX ": ") + String(max_cpm));
       display_history_graph(max_cpm);
       break;
 
     case display_ush_graph_max:
       display.setFont(ArialMT_Plain_10);
       display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, String(TEX_USH ": ") + format_value(cpm * CPM_USH_CONVERSION));
+      display.drawString(0, 0, String(TEXT_USH ": ") + format_value(cpm * CPM_USH_CONVERSION));
       display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, String(TEX_MAX ": ") + format_value(max_cpm * CPM_USH_CONVERSION));
+      display.drawString(OLED_MAX_CX, 0, String(TEXT_MAX ": ") + format_value(max_cpm * CPM_USH_CONVERSION));
       display_history_graph(max_cpm);
       break;
 
@@ -410,16 +547,16 @@ void loop()
       display.setTextAlignment(TEXT_ALIGN_LEFT);
       display.drawString(0, 0, String(TEXT_CPM ": ") + String(cpm));
       display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, String(TEX_AVG ": ") + format_value(avg_cpm));
+      display.drawString(OLED_MAX_CX, 0, String(TEXT_AVG ": ") + format_value(avg_cpm));
       display_history_graph(max_cpm);
       break;
 
     case display_ush_graph_avg:
       display.setFont(ArialMT_Plain_10);
       display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, String(TEX_USH ": ") + format_value(cpm * CPM_USH_CONVERSION));
+      display.drawString(0, 0, String(TEXT_USH ": ") + format_value(cpm * CPM_USH_CONVERSION));
       display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, String(TEX_AVG ": ") + format_value(avg_cpm * CPM_USH_CONVERSION));
+      display.drawString(OLED_MAX_CX, 0, String(TEXT_AVG ": ") + format_value(avg_cpm * CPM_USH_CONVERSION));
       display_history_graph(max_cpm);
       break;
 
@@ -434,7 +571,7 @@ void loop()
     case display_ush:
       display.setFont(ArialMT_Plain_16);
       display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, TEX_USH);
+      display.drawString(OLED_MAX_CX / 2, 0, TEXT_USH);
       display.setFont(ArialMT_Plain_24);
       display.drawString(OLED_MAX_CX / 2, 24, format_value(cpm * CPM_USH_CONVERSION));
       break;
@@ -442,7 +579,7 @@ void loop()
     case display_cpm_avg:
       display.setFont(ArialMT_Plain_16);
       display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, TEXT_CPM " " TEX_AVG);
+      display.drawString(OLED_MAX_CX / 2, 0, TEXT_CPM " " TEXT_AVG);
       display.setFont(ArialMT_Plain_24);
       display.drawString(OLED_MAX_CX / 2, 24, format_value(avg_cpm));
       break;
@@ -450,7 +587,7 @@ void loop()
     case display_ush_avg:
       display.setFont(ArialMT_Plain_16);
       display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, TEX_USH " " TEX_AVG);
+      display.drawString(OLED_MAX_CX / 2, 0, TEXT_USH " " TEXT_AVG);
       display.setFont(ArialMT_Plain_24);
       display.drawString(OLED_MAX_CX / 2, 24, format_value(avg_cpm * CPM_USH_CONVERSION));
       break;
@@ -460,23 +597,37 @@ void loop()
       break;
 
     case display_ush_act_log_gauge:
-      display_meter(scale_ush, TEX_USH, "", cpm * CPM_USH_CONVERSION);
+      display_meter(scale_ush, TEXT_USH, "", cpm * CPM_USH_CONVERSION);
       break;
 
     case display_cpm_max_log_gauge:
-      display_meter(scale_cpm, TEXT_CPM, TEX_MAX, max_cpm);
+      display_meter(scale_cpm, TEXT_CPM, TEXT_MAX, max_cpm);
       break;
 
     case display_ush_max_log_gauge:
-      display_meter(scale_ush, TEX_USH, TEX_MAX, max_cpm * CPM_USH_CONVERSION);
+      display_meter(scale_ush, TEXT_USH, TEXT_MAX, max_cpm * CPM_USH_CONVERSION);
       break;
 
     case display_cpm_avg_log_gauge:
-      display_meter(scale_cpm, TEXT_CPM, TEX_AVG, avg_cpm);
+      display_meter(scale_cpm, TEXT_CPM, TEXT_AVG, avg_cpm);
       break;
 
     case display_ush_avg_log_gauge:
-      display_meter(scale_ush, TEX_USH, TEX_AVG, avg_cpm * CPM_USH_CONVERSION);
+      display_meter(scale_ush, TEXT_USH, TEXT_AVG, avg_cpm * CPM_USH_CONVERSION);
+      break;
+
+    case display_total_s:
+      // Calculate total in Sieverts
+      display.setFont(ArialMT_Plain_16);
+      display.setTextAlignment(TEXT_ALIGN_CENTER);
+      display.drawString(OLED_MAX_CX / 2, 0, TEXT_TOTAL);
+      display.setFont(ArialMT_Plain_24);
+
+      display.drawString(OLED_MAX_CX / 2, 24, format_si(impulses * CPM_USH_CONVERSION * 60 / 1E6) + "S");
+      display.setFont(ArialMT_Plain_10);
+      display.drawString(OLED_MAX_CX / 2, 54, format_d_h_m_s(millis() / 1000));
+      // Can be done continuously
+      redraw = true;
       break;
 
     case display_info:
@@ -485,11 +636,10 @@ void loop()
       display.drawString(0, 0, TEXT_TUBE TEXT_TUBE_TYPE);
       display.drawXbm(48, 20, 32, 32, radiation_icon);
       display.setFont(ArialMT_Plain_10);
-      display.drawString(0, 54, TEXT_CPM " to " TEX_USH ": " + String(CPM_USH_CONVERSION, 6));
+      display.drawString(0, 54, TEXT_CPM " to " TEXT_USH ": " + String(CPM_USH_CONVERSION, 6));
       break;
     }
 
     display.display();
-    redraw = false;
   }
 }
