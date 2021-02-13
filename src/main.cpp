@@ -30,8 +30,15 @@
 //#define CPM_USH_CONVERSION	0.010900	// SBT9
 //#define CPM_USH_CONVERSION	0.006000	// SI1G
 #define CPM_USH_CONVERSION (1.0 / 153.8) // M4011
+#define TEXT_TUBE_TYPE "M4011"
 
-static String tube_text("M4011");
+// Text constants
+#define TEXT_TUBE "GM Tube: "
+
+#define TEXT_CPM "CPM"
+#define TEX_USH "uS/h"
+#define TEX_MAX "Max"
+#define TEX_AVG "Avg"
 
 // Logging period in milliseconds, recommended value 15000-60000.
 #define CPM_LOG_PERIOD_VERY_FAST 5000
@@ -82,7 +89,7 @@ enum display_mode_t
   display_info
 };
 
-display_mode_t display_mode = display_ush_graph_avg;
+display_mode_t display_mode = display_ush_act_log_gauge;
 bool redraw;
 
 // ISR pulse from Geiger
@@ -246,7 +253,7 @@ void setup()
 String format_value(float value)
 {
   // No decimal places
-  if (value >= 0)
+  if (value >= 1)
     return String(value, 0);
 
   if (value < 0.001f)
@@ -261,7 +268,7 @@ String format_value(float value)
   return String(value, 1);
 }
 
-void display_meter(const std::vector<float> &scale, const String &units, const String &type, float value)
+void display_meter(const std::vector<float> &scale, const char *units, const char *type, float value)
 {
   // x_center is a little bit (2px) to the left to accomodate large values on the right
   const auto x_center = OLED_MAX_CX / 2 - 2;
@@ -375,12 +382,6 @@ void loop()
     auto avg_cpm = std::accumulate(history.begin(), history.end(), 0.0f) / history.size();
     auto max_cpm = *std::max_element(history.begin(), history.end());
 
-    static const String cpm_text("CPM");
-    static const String ush_text("uS/h");
-    static const String act_text("Act");
-    static const String max_text("Max");
-    static const String avg_text("Avg");
-
     static const std::vector<float> scale_cpm = {10.0f, 20.0f, 30.0f, 50.0f, 200.0f, 300.0f, 500.0f, 1000.0f};
     static const std::vector<float> scale_ush = {0.1f, 0.2f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 20.0f, 50.0f, 100.0f};
 
@@ -389,43 +390,43 @@ void loop()
     case display_cpm_graph_max:
       display.setFont(ArialMT_Plain_10);
       display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, cpm_text + ": " + String(cpm));
+      display.drawString(0, 0, String(TEXT_CPM ": ") + String(cpm));
       display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, max_text + ": " + String(max_cpm));
+      display.drawString(OLED_MAX_CX, 0, String(TEX_MAX ": ") + String(max_cpm));
       display_history_graph(max_cpm);
       break;
 
     case display_ush_graph_max:
       display.setFont(ArialMT_Plain_10);
       display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, ush_text + ": " + format_value(cpm * CPM_USH_CONVERSION));
+      display.drawString(0, 0, String(TEX_USH ": ") + format_value(cpm * CPM_USH_CONVERSION));
       display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, max_text + ": " + format_value(max_cpm * CPM_USH_CONVERSION));
+      display.drawString(OLED_MAX_CX, 0, String(TEX_MAX ": ") + format_value(max_cpm * CPM_USH_CONVERSION));
       display_history_graph(max_cpm);
       break;
 
     case display_cpm_graph_avg:
       display.setFont(ArialMT_Plain_10);
       display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, cpm_text + ": " + String(cpm));
+      display.drawString(0, 0, String(TEXT_CPM ": ") + String(cpm));
       display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, avg_text + ": " + format_value(avg_cpm));
+      display.drawString(OLED_MAX_CX, 0, String(TEX_AVG ": ") + format_value(avg_cpm));
       display_history_graph(max_cpm);
       break;
 
     case display_ush_graph_avg:
       display.setFont(ArialMT_Plain_10);
       display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, ush_text + ": " + format_value(cpm * CPM_USH_CONVERSION));
+      display.drawString(0, 0, String(TEX_USH ": ") + format_value(cpm * CPM_USH_CONVERSION));
       display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, avg_text + ": " + format_value(avg_cpm * CPM_USH_CONVERSION));
+      display.drawString(OLED_MAX_CX, 0, String(TEX_AVG ": ") + format_value(avg_cpm * CPM_USH_CONVERSION));
       display_history_graph(max_cpm);
       break;
 
     case display_cpm:
       display.setFont(ArialMT_Plain_16);
       display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, cpm_text);
+      display.drawString(OLED_MAX_CX / 2, 0, TEXT_CPM);
       display.setFont(ArialMT_Plain_24);
       display.drawString(OLED_MAX_CX / 2, 24, String(cpm));
       break;
@@ -433,7 +434,7 @@ void loop()
     case display_ush:
       display.setFont(ArialMT_Plain_16);
       display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, ush_text);
+      display.drawString(OLED_MAX_CX / 2, 0, TEX_USH);
       display.setFont(ArialMT_Plain_24);
       display.drawString(OLED_MAX_CX / 2, 24, format_value(cpm * CPM_USH_CONVERSION));
       break;
@@ -441,7 +442,7 @@ void loop()
     case display_cpm_avg:
       display.setFont(ArialMT_Plain_16);
       display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, cpm_text + " " + avg_text);
+      display.drawString(OLED_MAX_CX / 2, 0, TEXT_CPM " " TEX_AVG);
       display.setFont(ArialMT_Plain_24);
       display.drawString(OLED_MAX_CX / 2, 24, format_value(avg_cpm));
       break;
@@ -449,42 +450,42 @@ void loop()
     case display_ush_avg:
       display.setFont(ArialMT_Plain_16);
       display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, ush_text + " " + avg_text);
+      display.drawString(OLED_MAX_CX / 2, 0, TEX_USH " " TEX_AVG);
       display.setFont(ArialMT_Plain_24);
       display.drawString(OLED_MAX_CX / 2, 24, format_value(avg_cpm * CPM_USH_CONVERSION));
       break;
 
     case display_cpm_act_log_gauge:
-      display_meter(scale_cpm, cpm_text, act_text, cpm);
+      display_meter(scale_cpm, TEXT_CPM, "", cpm);
       break;
 
     case display_ush_act_log_gauge:
-      display_meter(scale_ush, ush_text, act_text, cpm * CPM_USH_CONVERSION);
+      display_meter(scale_ush, TEX_USH, "", cpm * CPM_USH_CONVERSION);
       break;
 
     case display_cpm_max_log_gauge:
-      display_meter(scale_cpm, cpm_text, max_text, max_cpm);
+      display_meter(scale_cpm, TEXT_CPM, TEX_MAX, max_cpm);
       break;
 
     case display_ush_max_log_gauge:
-      display_meter(scale_ush, ush_text, max_text, max_cpm * CPM_USH_CONVERSION);
+      display_meter(scale_ush, TEX_USH, TEX_MAX, max_cpm * CPM_USH_CONVERSION);
       break;
 
     case display_cpm_avg_log_gauge:
-      display_meter(scale_cpm, cpm_text, avg_text, avg_cpm);
+      display_meter(scale_cpm, TEXT_CPM, TEX_AVG, avg_cpm);
       break;
 
     case display_ush_avg_log_gauge:
-      display_meter(scale_ush, ush_text, avg_text, avg_cpm * CPM_USH_CONVERSION);
+      display_meter(scale_ush, TEX_USH, TEX_AVG, avg_cpm * CPM_USH_CONVERSION);
       break;
 
     case display_info:
       display.setFont(ArialMT_Plain_16);
       display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, "Tube: " + tube_text);
+      display.drawString(0, 0, TEXT_TUBE TEXT_TUBE_TYPE);
       display.drawXbm(48, 20, 32, 32, radiation_icon);
       display.setFont(ArialMT_Plain_10);
-      display.drawString(0, 54, "CPM => uS/h: " + String(CPM_USH_CONVERSION, 6));
+      display.drawString(0, 54, TEXT_CPM " to " TEX_USH ": " + String(CPM_USH_CONVERSION, 6));
       break;
     }
 
