@@ -361,7 +361,7 @@ String format_si(const double value)
     return String(value * 1E9, 2) + "n";
   if (value_abs < 1E-3)
     return String(value * 1E6, 2) + "u";
-  if (value_abs < 0)
+  if (value_abs < 1)
     return String(value * 1E3, 2) + "m";
   if (value_abs < 1E3)
     return String(value, 2);
