@@ -1,36 +1,52 @@
 #include <Arduino.h>
 
-#include "OneButton.h"
+#include "soc/rtc_cntl_reg.h"
+#include <SPI.h>
+// Setting for the display are defined in platformio.ini
+#include <TFT_eSPI.h>
 
-#include <ESP8266WiFi.h>
-#include <Wire.h>
-#include <EEPROM.h>
+#define TFT_BL 4 // Display backlight control pin
 
-#include "SSD1306.h"
-#include "SH1106.h"
+#define FONT_10PT 2
+#define FONT_26PT 4
+#define FONT_48PT 6
+#define FONT_48PT_LCD 7
 
-#include "radiation_icon.h"
+#include <Button2.h>
 
-#include <DNSServer.h>
-#include <ESP8266mDNS.h>
-#include <ESPAsyncTCP.h>
-#include <ESPAsyncWebServer.h>
+#include <WiFi.h>
+//#include <DNSServer.h>
+//#include <ESP8266mDNS.h>
+//#include <ESPAsyncTCP.h>
+//#include <ESPAsyncWebServer.h>
 
-#include "LittleFS.h"
+//#include "LittleFS.h"
 
 #include <vector>
 #include <tuple>
 
-// Inputs / outpunts
-#define GPIO_OUT_SDA D1
-#define GPIO_OUT_SCL D2
+#define GPIO_IN_GEIGER 27
 
-#define GPIO_IN_GEIGER D7
-#define GPIO_IN_BUTTON D3
+#define BUTTON_1 35
+#define BUTTON_2 0
 
-// Display settings 128x64 OLED
-#define OLED_MAX_CX 128
-#define OLED_MAX_CY 64
+// Screen is 240 * 135 pixels (rotated)
+#define DISPLAY_MAX_CX 240
+#define DISPLAY_MAX_CY 135
+#define BACKGROUND_COLOR TFT_BLACK
+
+#define COLOR_TEXT TFT_WHITE
+
+#define COLOR_SCALE TFT_BLUE
+#define COLOR_TICK TFT_YELLOW
+#define COLOR_GAUGE TFT_RED
+
+#define COLOR_GRAPH TFT_VIOLET
+
+// Use hardware SPI
+auto tft = TFT_eSPI(TFT_WIDTH, TFT_HEIGHT);
+Button2 button1(BUTTON_1, INPUT);
+Button2 button2(BUTTON_2, INPUT);
 
 // CPM => uS/h
 //#define CPM_USH_CONVERSION	0.006315	// SBM20
@@ -79,7 +95,7 @@ unsigned long cpm;
 #define MAX_HISTORY_REST 1000
 std::vector<std::tuple<unsigned long, unsigned long long>> history;
 
-#define MAX_HISTORY_DISPLAY OLED_MAX_CX
+#define MAX_HISTORY_DISPLAY DISPLAY_MAX_CX
 std::vector<unsigned long> history_cpm;
 float avg_cpm;
 unsigned long max_cpm;
@@ -88,13 +104,8 @@ unsigned long max_cpm;
 #define WIFI_SSID "M4011"
 #define WIFI_PASSWORD ""
 
-DNSServer dnsServer;
-AsyncWebServer server(80);
-
-// Create display(Adr, SDA-pin, SCL-pin)
-SSD1306 display(0x3c, GPIO_OUT_SDA, GPIO_OUT_SCL); // GPIO 5 = D1, GPIO 4 = D2
-
-OneButton button(GPIO_IN_BUTTON, true);
+//DNSServer dnsServer;
+//AsyncWebServer server(80);
 
 enum display_mode_t
 {
@@ -125,7 +136,7 @@ void ICACHE_RAM_ATTR tube_impulse()
   impulses++;
 }
 
-void onButtonClick()
+void change_display_mode(Button2 &button)
 {
   switch (display_mode)
   {
@@ -197,7 +208,7 @@ void onButtonClick()
   redraw = true;
 }
 
-void onButtonDoubleClick()
+void change_update_speed(Button2 &button)
 {
   String text;
 
@@ -229,16 +240,12 @@ void onButtonDoubleClick()
     break;
   }
 
-  display.clear();
-  display.setTextAlignment(TEXT_ALIGN_CENTER);
-  display.setFont(ArialMT_Plain_10);
-  display.drawString(OLED_MAX_CX / 2, 0, "Update speed");
-  display.setFont(ArialMT_Plain_16);
-  display.drawString(OLED_MAX_CX / 2, 16, text);
-  display.setFont(ArialMT_Plain_10);
-  display.drawString(OLED_MAX_CX / 2, 40, "Interval: " + String(log_period / 1000) + " sec.");
-  display.drawString(OLED_MAX_CX / 2, 54, "Wait...");
-  display.display();
+  // Clear the screen
+  tft.fillRect(0, 0, TFT_HEIGHT, TFT_WIDTH, BACKGROUND_COLOR);
+  tft.drawCentreString("Update speed", DISPLAY_MAX_CX / 2, 0, FONT_10PT);
+  tft.drawCentreString(text, DISPLAY_MAX_CX / 2, 20, FONT_26PT);
+  tft.drawCentreString("Interval: " + String(log_period / 1000) + " sec.", DISPLAY_MAX_CX / 2, 46, FONT_26PT);
+  tft.drawCentreString("Wait...", DISPLAY_MAX_CX / 2, DISPLAY_MAX_CY - 16, FONT_10PT);
 
   last_time_cpm_calculated = millis();
   last_impulses = impulses;
@@ -260,85 +267,101 @@ char *ul64toa(uint64_t value)
 
 void setup()
 {
+  // Disable brownout
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
   // put your setup code here, to run once:
   WiFi.mode(WIFI_AP);
 
-  // Start Serial
   Serial.begin(115200);
+  Serial.setDebugOutput(true);
+  esp_log_level_set("*", ESP_LOG_VERBOSE);
 
-  if (!LittleFS.begin())
-    Serial.println("LITTLEFS Mount Failed");
+  log_i("CPU Freq = %d Mhz", getCpuFrequencyMhz());
+  log_i("Starting Geiger display...");
 
-  // Start Display
-  display.init();
-  display.flipScreenVertically();
-
-  // Show start screen
-  display.clear();
-  display.setFont(ArialMT_Plain_16);
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-  display.drawString(0, 0, "Geiger");
-  display.drawString(0, 16, "Display");
-  display.drawXbm(128 - 32, 2, 32, 32, radiation_icon);
-
-  display.setTextAlignment(TEXT_ALIGN_CENTER);
-  display.setFont(ArialMT_Plain_10);
-  display.drawString(OLED_MAX_CX / 2, 40, "Copyright (c) 2021");
-  display.drawString(OLED_MAX_CX / 2, 52, "Rene Zeldenthuis");
-  display.display();
-
-  // Link the onButtonClick function to be called on a click event.
-  button.attachClick(onButtonClick);
-  button.attachDoubleClick(onButtonDoubleClick);
+  // if (!LittleFS.begin())
+  //   log_e("LittleFS Mount Failed");
 
   // Define external interrupts
   pinMode(GPIO_IN_GEIGER, INPUT);
   attachInterrupt(digitalPinToInterrupt(GPIO_IN_GEIGER), tube_impulse, FALLING);
 
+  // Start Display
+  tft.init();
+#ifdef TFT_BL
+  // TFT_BL has been set in the TFT_eSPI library in the User Setup file TTGO_T_Display.h
+  pinMode(TFT_BL, OUTPUT);                // Set backlight pin to output mode
+  digitalWrite(TFT_BL, TFT_BACKLIGHT_ON); // Turn backlight on. TFT_BACKLIGHT_ON has been set in the TFT_eSPI library in the User Setup file TTGO_T_Display.h
+#endif
+
+  tft.setSwapBytes(true); // Swap the byte order for pushImage() - corrects endianness
+  tft.setRotation(1);
+  tft.setTextDatum(TL_DATUM); // Top Left
+  tft.setTextColor(COLOR_TEXT);
+  tft.setTextWrap(false, false);
+
+  // Clear the screen
+  tft.fillRect(0, 0, TFT_HEIGHT, TFT_WIDTH, BACKGROUND_COLOR);
+  tft.setCursor(0, 0);
+  tft.setTextColor(TFT_GREEN);
+  tft.drawCentreString("Geiger", DISPLAY_MAX_CX / 2, 0, FONT_26PT);
+  tft.drawCentreString("Display", DISPLAY_MAX_CX / 2, 26, FONT_26PT);
+  //tft.drawXbm(128 - 32, 2, 32, 32, radiation_icon);
+  tft.setTextColor(TFT_DARKGREY);
+  tft.drawCentreString("Copyright (c) 2021", DISPLAY_MAX_CX / 2, 105, FONT_10PT);
+  tft.drawCentreString("Rene Zeldenthuis", DISPLAY_MAX_CX / 2, 115, FONT_10PT);
+
+  // Link the onButtonClick function to be called on a click event.
+  button1.setPressedHandler(change_display_mode);
+  button2.setPressedHandler(change_update_speed);
+
+  tft.setTextColor(COLOR_TEXT);
+  /*
   // Wifi Access Point mode
   if (WiFi.softAP(WIFI_SSID, WIFI_PASSWORD))
-    Serial.println("Creating access point failed");
+    log_e("Creating access point failed");
 
   dnsServer.start(53, "*", WiFi.softAPIP());
   MDNS.addService("http", "tcp", 80);
 
-  server.onNotFound([](AsyncWebServerRequest *request) {
-    request->redirect("/");
-  });
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(LittleFS, "/index.html", "text/html");
-  });
-  server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(LittleFS, "/favicon.ico", "image/x-icon");
-  });
-  server.on("/jquery-3.5.1.min.js", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(LittleFS, "/jquery-3.5.1.min.js", "text/javascript");
-  });
-  server.on("/bootstrap.min.css", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(LittleFS, "/bootstrap.min.css", "text/css");
-  });
-  server.on("/q", HTTP_GET, [](AsyncWebServerRequest *request) {
-    // Return the REST response
-    auto json = "{cpm_to_ush:" + String(CPM_USH_CONVERSION, 10) + "," +
-                "counts:[";
-    for (auto it = history.begin(); it != history.end(); ++it)
-    {
-      if (it != history.begin())
-        json += ",";
+  server.onNotFound([](AsyncWebServerRequest *request)
+                    { request->redirect("/"); });
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+            { request->send(LittleFS, "/index.html", "text/html"); });
+  server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request)
+            { request->send(LittleFS, "/favicon.ico", "image/x-icon"); });
+  server.on("/jquery-3.5.1.min.js", HTTP_GET, [](AsyncWebServerRequest *request)
+            { request->send(LittleFS, "/jquery-3.5.1.min.js", "text/javascript"); });
+  server.on("/bootstrap.min.css", HTTP_GET, [](AsyncWebServerRequest *request)
+            { request->send(LittleFS, "/bootstrap.min.css", "text/css"); });
+  server.on("/q", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+              // Return the REST response
+              auto json = "{cpm_to_ush:" + String(CPM_USH_CONVERSION, 10) + "," +
+                          "counts:[";
+              for (auto it = history.begin(); it != history.end(); ++it)
+              {
+                if (it != history.begin())
+                  json += ",";
 
-      json += "{time:" + String(std::get<0>(*it) / 1000) + ",count:" + ul64toa(std::get<1>(*it)) + "}";
-    }
-    json += "]}";
-    Serial.println(json);
-    request->send(200, "application/json", json);
-  });
+                json += "{time:" + String(std::get<0>(*it) / 1000) + ",count:" + ul64toa(std::get<1>(*it)) + "}";
+              }
+              json += "]}";
+              log_i(json);
+              request->send(200, "application/json", json);
+            });
 
   server.begin();
+  */
 }
 
-String format_value(const float value)
+String format_value(float value)
 {
   // No decimal places
+  if (value < 0)
+    value = -value;
+
   if (value >= 1)
     return String(value, 0);
   if (value < 0.001f)
@@ -350,7 +373,7 @@ String format_value(const float value)
   return String(value, 1);
 }
 
-String format_si(const double value)
+String format_si(double value)
 {
   if (value == 0.0)
     return "0";
@@ -382,34 +405,32 @@ String format_d_h_m_s(ulong seconds)
   seconds %= 60 * 60;
   auto minutes = seconds / 60;
   seconds %= 60;
-  return String(days) + " " + (hours < 10 ? "0" : "") + String(hours) + ((minutes < 10 ? ":0" : ":") + String(minutes) + (seconds < 10 ? ":0" : ":") + String(seconds));
+  return String(days) + " days, " + (hours < 10 ? "0" : "") + String(hours) + ((minutes < 10 ? ":0" : ":") + String(minutes) + (seconds < 10 ? ":0" : ":") + String(seconds));
 }
 
 void display_meter(const std::vector<float> &scale, const char *units, const char *type, float value)
 {
-  // x_center is a little bit off (2px) to the left to accomodate large values on the right
-  const auto x_center = OLED_MAX_CX / 2 - 2;
-  const auto y_center = OLED_MAX_CY - 11;
-  const auto r = OLED_MAX_CX / 2 - 25;
+  // x_center is a little bit off (2px) to the left to accommodate large values on the right
+  const auto x_center = DISPLAY_MAX_CX / 2;
+  const auto y_center = DISPLAY_MAX_CY - 20;
+  const auto r = DISPLAY_MAX_CX / 2 - 25;
   const auto r_center = 2;
   const auto r_tick = r + 3;
   const auto r_text = r + 15;
   const auto r_gauge = r - 4;
 
-  display.clear();
-  display.setFont(ArialMT_Plain_10);
+  tft.fillRect(0, 0, TFT_HEIGHT, TFT_WIDTH, BACKGROUND_COLOR);
+  tft.setCursor(0, 0);
 
-  display.drawCircle(x_center, y_center, r_center);
+  tft.drawCircle(x_center, y_center, r_center, COLOR_SCALE);
   // Draw border of the gauge
-  display.drawCircleQuads(x_center, y_center, r, 0b0011);
+  tft.drawCircleHelper(x_center, y_center, r, 0b0011, COLOR_SCALE);
   // Draw the units
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-  display.drawString(0, 0, units);
+  tft.drawString(units, 0, 0, FONT_10PT);
   // Draw the type
-  display.setTextAlignment(TEXT_ALIGN_RIGHT);
-  display.drawString(OLED_MAX_CX, 0, type);
+  tft.drawRightString(type, DISPLAY_MAX_CX, 0, FONT_10PT);
 
-  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  //  tft.setTextAlignment(TEXT_ALIGN_CENTER);
 
   auto const min_tick = *std::min_element(scale.begin(), scale.end());
   auto const max_tick = *std::max_element(scale.begin(), scale.end());
@@ -427,14 +448,12 @@ void display_meter(const std::vector<float> &scale, const char *units, const cha
     auto const tick_sin = sin(tick_radians);
     auto const tick_cos = cos(tick_radians);
     // tick is on circle:
-    display.drawLine(x_center - r * tick_cos, y_center - r * tick_sin, x_center - r_tick * tick_cos, y_center - r_tick * tick_sin);
-
-    display.drawString(x_center - r_text * tick_cos, y_center - r_text * tick_sin, format_value(tick));
+    tft.drawLine(x_center - r * tick_cos, y_center - r * tick_sin, x_center - r_tick * tick_cos, y_center - r_tick * tick_sin, COLOR_TICK);
+    tft.drawCentreString(format_value(tick), x_center - r_text * tick_cos, y_center - r_text * tick_sin, FONT_10PT);
   }
 
   // Draw value
-  display.setTextAlignment(TEXT_ALIGN_CENTER);
-  display.drawString(x_center, OLED_MAX_CY - 10, format_value(value));
+  tft.drawCentreString(format_value(value), x_center, y_center, FONT_10PT);
 
   // Draw the gauge
   if (value < min_tick)
@@ -445,9 +464,7 @@ void display_meter(const std::vector<float> &scale, const char *units, const cha
   auto const log_value = log(value) - log_min;
   // Convert to radians (PI is half a circle)
   auto const value_radians = log_value / log_scale_minmax * PI;
-  display.drawLine(x_center, y_center, x_center - r_gauge * cos(value_radians), y_center - r_gauge * sin(value_radians));
-
-  display.display();
+  tft.drawLine(x_center, y_center, x_center - r_gauge * cos(value_radians), y_center - r_gauge * sin(value_radians), COLOR_GAUGE);
 }
 
 void display_history_graph(unsigned long max_cpm)
@@ -455,13 +472,13 @@ void display_history_graph(unsigned long max_cpm)
   if (history_cpm.size())
   {
     // Display a history graph. First line reserved for text
-    const float max_height = (OLED_MAX_CY - 10) - 1;
+    const float max_height = (DISPLAY_MAX_CY - 10) - 1;
     const auto cpm_adjust = max_cpm ? max_height / max_cpm : 0.0;
     int16_t x = 0;
     for (auto it : history_cpm)
     {
       // Draw from the bottom up
-      display.drawLine(x, OLED_MAX_CY, x, OLED_MAX_CY - it * cpm_adjust);
+      tft.drawLine(x, DISPLAY_MAX_CY, x, DISPLAY_MAX_CY - it * cpm_adjust, COLOR_GRAPH);
       x++;
     }
   }
@@ -471,11 +488,12 @@ void loop()
 {
   // put your main code here, to run repeatedly:
 
-  // Wifi / Web
-  dnsServer.processNextRequest();
+  // WiFi / Web
+  //dnsServer.processNextRequest();
 
-  // keep watching the push button
-  button.tick();
+  // keep watching the push buttons
+  button1.loop();
+  button2.loop();
 
   // Calculate the CPM
   auto now = millis();
@@ -509,7 +527,7 @@ void loop()
     if (cpm > max_cpm)
       max_cpm = cpm;
 
-    Serial.println(cpm);
+    log_i("CPM: %ld", cpm);
 
     redraw = true;
   }
@@ -517,79 +535,56 @@ void loop()
   if (redraw)
   {
     redraw = false;
-    display.clear();
+    tft.fillRect(0, 0, TFT_HEIGHT, TFT_WIDTH, BACKGROUND_COLOR);
+    tft.setCursor(0, 0);
 
-    static const std::vector<float> scale_cpm = {10.0f, 20.0f, 30.0f, 50.0f, 200.0f, 300.0f, 500.0f, 1000.0f};
+    static const std::vector<float> scale_cpm = {10.0f, 20.0f, 30.0f, 50.0f, 100.0f, 200.0f, 300.0f, 500.0f, 1000.0f};
     static const std::vector<float> scale_ush = {0.1f, 0.2f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 20.0f, 50.0f, 100.0f};
 
     switch (display_mode)
     {
     case display_cpm_graph_max:
-      display.setFont(ArialMT_Plain_10);
-      display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, String(TEXT_CPM ": ") + String(cpm));
-      display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, String(TEXT_MAX ": ") + String(max_cpm));
+      tft.drawString(String(TEXT_CPM ": ") + String(cpm), 0, 0, FONT_10PT);
+      tft.drawRightString(String(TEXT_MAX ": ") + String(max_cpm), DISPLAY_MAX_CX, 0, FONT_10PT);
       display_history_graph(max_cpm);
       break;
 
     case display_ush_graph_max:
-      display.setFont(ArialMT_Plain_10);
-      display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, String(TEXT_USH ": ") + format_value(cpm * CPM_USH_CONVERSION));
-      display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, String(TEXT_MAX ": ") + format_value(max_cpm * CPM_USH_CONVERSION));
+      tft.drawString(String(TEXT_USH ": ") + format_value(cpm * CPM_USH_CONVERSION), 0, 0, FONT_10PT);
+      tft.drawRightString(String(TEXT_MAX ": ") + format_value(max_cpm * CPM_USH_CONVERSION), DISPLAY_MAX_CX, 0, FONT_10PT);
       display_history_graph(max_cpm);
       break;
 
     case display_cpm_graph_avg:
-      display.setFont(ArialMT_Plain_10);
-      display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, String(TEXT_CPM ": ") + String(cpm));
-      display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, String(TEXT_AVG ": ") + format_value(avg_cpm));
+      tft.drawString(String(TEXT_CPM ": ") + String(cpm), 0, 0, FONT_10PT);
+      tft.drawRightString(String(TEXT_AVG ": ") + format_value(avg_cpm), DISPLAY_MAX_CX, 0, FONT_10PT);
       display_history_graph(max_cpm);
       break;
 
     case display_ush_graph_avg:
-      display.setFont(ArialMT_Plain_10);
-      display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, String(TEXT_USH ": ") + format_value(cpm * CPM_USH_CONVERSION));
-      display.setTextAlignment(TEXT_ALIGN_RIGHT);
-      display.drawString(OLED_MAX_CX, 0, String(TEXT_AVG ": ") + format_value(avg_cpm * CPM_USH_CONVERSION));
+      tft.drawString(String(TEXT_USH ": ") + format_value(cpm * CPM_USH_CONVERSION), 0, 0, FONT_10PT);
+      tft.drawRightString(String(TEXT_AVG ": ") + format_value(avg_cpm * CPM_USH_CONVERSION), DISPLAY_MAX_CX, 0, FONT_10PT);
       display_history_graph(max_cpm);
       break;
 
     case display_cpm:
-      display.setFont(ArialMT_Plain_16);
-      display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, TEXT_CPM);
-      display.setFont(ArialMT_Plain_24);
-      display.drawString(OLED_MAX_CX / 2, 24, String(cpm));
+      tft.drawCentreString(TEXT_CPM, DISPLAY_MAX_CX / 2, 0, FONT_10PT);
+      tft.drawCentreString(String(cpm), DISPLAY_MAX_CX / 2, (DISPLAY_MAX_CY - 48) / 2, FONT_48PT_LCD);
       break;
 
     case display_ush:
-      display.setFont(ArialMT_Plain_16);
-      display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, TEXT_USH);
-      display.setFont(ArialMT_Plain_24);
-      display.drawString(OLED_MAX_CX / 2, 24, format_value(cpm * CPM_USH_CONVERSION));
+      tft.drawCentreString(TEXT_USH, DISPLAY_MAX_CX / 2, 0, FONT_10PT);
+      tft.drawCentreString(format_value(cpm * CPM_USH_CONVERSION), DISPLAY_MAX_CX / 2, (DISPLAY_MAX_CY - 48) / 2, FONT_48PT_LCD);
       break;
 
     case display_cpm_avg:
-      display.setFont(ArialMT_Plain_16);
-      display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, TEXT_CPM " " TEXT_AVG);
-      display.setFont(ArialMT_Plain_24);
-      display.drawString(OLED_MAX_CX / 2, 24, format_value(avg_cpm));
+      tft.drawCentreString(TEXT_CPM " " TEXT_AVG, DISPLAY_MAX_CX / 2, 0, FONT_10PT);
+      tft.drawCentreString(format_value(avg_cpm), DISPLAY_MAX_CX / 2, (DISPLAY_MAX_CY - 48) / 2, FONT_48PT_LCD);
       break;
 
     case display_ush_avg:
-      display.setFont(ArialMT_Plain_16);
-      display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, TEXT_USH " " TEXT_AVG);
-      display.setFont(ArialMT_Plain_24);
-      display.drawString(OLED_MAX_CX / 2, 24, format_value(avg_cpm * CPM_USH_CONVERSION));
+      tft.drawCentreString(TEXT_USH " " TEXT_AVG, DISPLAY_MAX_CX / 2, 0, FONT_10PT);
+      tft.drawString(format_value(avg_cpm * CPM_USH_CONVERSION), DISPLAY_MAX_CX / 2, (DISPLAY_MAX_CY - 48) / 2, FONT_48PT_LCD);
       break;
 
     case display_cpm_act_log_gauge:
@@ -618,28 +613,16 @@ void loop()
 
     case display_total_s:
       // Calculate total in Sieverts
-      display.setFont(ArialMT_Plain_16);
-      display.setTextAlignment(TEXT_ALIGN_CENTER);
-      display.drawString(OLED_MAX_CX / 2, 0, TEXT_TOTAL);
-      display.setFont(ArialMT_Plain_24);
-
-      display.drawString(OLED_MAX_CX / 2, 24, format_si(impulses * CPM_USH_CONVERSION * 60 / 1E6) + "S");
-      display.setFont(ArialMT_Plain_10);
-      display.drawString(OLED_MAX_CX / 2, 54, format_d_h_m_s(millis() / 1000));
-      // Can be done continuously
-      redraw = true;
+      tft.drawCentreString(TEXT_TOTAL, DISPLAY_MAX_CX / 2, 0, FONT_10PT);
+      tft.drawCentreString(format_si(impulses * CPM_USH_CONVERSION * 60 / 1E6) + "S", DISPLAY_MAX_CX / 2, 24, FONT_26PT);
+      tft.drawCentreString(format_d_h_m_s(millis() / 1000), DISPLAY_MAX_CX / 2, 54, FONT_10PT);
       break;
 
     case display_info:
-      display.setFont(ArialMT_Plain_16);
-      display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, TEXT_TUBE TEXT_TUBE_TYPE);
-      display.drawXbm(48, 20, 32, 32, radiation_icon);
-      display.setFont(ArialMT_Plain_10);
-      display.drawString(0, 54, TEXT_CPM " to " TEXT_USH ": " + String(CPM_USH_CONVERSION, 6));
+      tft.drawString(TEXT_TUBE TEXT_TUBE_TYPE, 0, 0, FONT_10PT);
+      //      tft.drawXbm(48, 20, 32, 32, radiation_icon);
+      tft.drawString(TEXT_CPM " to " TEXT_USH ": " + String(CPM_USH_CONVERSION, 6), 0, 54, FONT_10PT);
       break;
     }
-
-    display.display();
   }
 }
