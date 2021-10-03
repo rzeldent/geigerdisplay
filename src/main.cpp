@@ -21,6 +21,7 @@
 //#include <ESPAsyncWebServer.h>
 
 //#include "LittleFS.h"
+#include <images.h>
 
 #include <vector>
 #include <tuple>
@@ -45,6 +46,7 @@
 
 // Use hardware SPI
 auto tft = TFT_eSPI(TFT_WIDTH, TFT_HEIGHT);
+
 Button2 button1(BUTTON_1, INPUT);
 Button2 button2(BUTTON_2, INPUT);
 
@@ -59,6 +61,7 @@ Button2 button2(BUTTON_2, INPUT);
 //#define CPM_USH_CONVERSION	0.005940	// LND712
 //#define CPM_USH_CONVERSION	0.010900	// SBT9
 //#define CPM_USH_CONVERSION	0.006000	// SI1G
+
 #define CPM_USH_CONVERSION (1.0 / 153.8) // M4011
 #define TEXT_TUBE_TYPE "M4011"
 
@@ -67,9 +70,11 @@ Button2 button2(BUTTON_2, INPUT);
 
 #define TEXT_CPM "CPM"
 #define TEXT_USH "uS/h"
-#define TEXT_MAX "Max"
-#define TEXT_AVG "Avg"
+#define TEXT_MAX "MAX"
+#define TEXT_AVG "AVG"
 #define TEXT_TOTAL "Total exposure"
+#define TEXT_CONVERSION "Conversion: "
+#define TEXT_INPUT_PIN "GPIO input: "
 
 // Logging period in milliseconds, recommended value 15000-60000.
 #define CPM_LOG_PERIOD_VERY_FAST 5000
@@ -93,6 +98,7 @@ unsigned long log_period = CPM_LOG_PERIOD_FAST;
 unsigned long cpm;
 
 #define MAX_HISTORY_REST 1000
+// Tuple: <time, impulses>
 std::vector<std::tuple<unsigned long, unsigned long long>> history;
 
 #define MAX_HISTORY_DISPLAY DISPLAY_MAX_CX
@@ -136,7 +142,7 @@ void ICACHE_RAM_ATTR tube_impulse()
   impulses++;
 }
 
-void change_display_mode(Button2 &button)
+void change_display_mode(const Button2 &button)
 {
   switch (display_mode)
   {
@@ -208,7 +214,7 @@ void change_display_mode(Button2 &button)
   redraw = true;
 }
 
-void change_update_speed(Button2 &button)
+void change_update_speed(const Button2 &button)
 {
   String text;
 
@@ -304,13 +310,8 @@ void setup()
   // Clear the screen
   tft.fillRect(0, 0, TFT_HEIGHT, TFT_WIDTH, BACKGROUND_COLOR);
   tft.setCursor(0, 0);
-  tft.setTextColor(TFT_GREEN);
-  tft.drawCentreString("Geiger", DISPLAY_MAX_CX / 2, 0, FONT_26PT);
-  tft.drawCentreString("Display", DISPLAY_MAX_CX / 2, 26, FONT_26PT);
-  //tft.drawXbm(128 - 32, 2, 32, 32, radiation_icon);
-  tft.setTextColor(TFT_DARKGREY);
-  tft.drawCentreString("Copyright (c) 2021", DISPLAY_MAX_CX / 2, 105, FONT_10PT);
-  tft.drawCentreString("Rene Zeldenthuis", DISPLAY_MAX_CX / 2, 115, FONT_10PT);
+  // Show image
+  tft.pushImage(0, 0, image_splash.width, image_splash.height, image_splash.data);
 
   // Link the onButtonClick function to be called on a click event.
   button1.setPressedHandler(change_display_mode);
@@ -360,7 +361,7 @@ String format_value(float value)
 {
   // No decimal places
   if (value < 0)
-    value = -value;
+    return "-" + format_value(-value);
 
   if (value >= 1)
     return String(value, 0);
@@ -373,27 +374,31 @@ String format_value(float value)
   return String(value, 1);
 }
 
-String format_si(double value)
+String format_si(double value, byte decimal_places)
 {
   if (value == 0.0)
     return "0";
+
+  if (value < 0)
+    return "-" + format_si(-value, decimal_places);
+
   auto value_abs = fabs(value);
   if (value_abs < 1E-9)
-    return String(value * 1E9, 2) + "p";
+    return String(value * 1E9, decimal_places) + "p";
   if (value_abs < 1E-6)
-    return String(value * 1E9, 2) + "n";
+    return String(value * 1E9, decimal_places) + "n";
   if (value_abs < 1E-3)
-    return String(value * 1E6, 2) + "u";
+    return String(value * 1E6, decimal_places) + "u";
   if (value_abs < 1)
-    return String(value * 1E3, 2) + "m";
+    return String(value * 1E3, decimal_places) + "m";
   if (value_abs < 1E3)
     return String(value, 2);
   if (value_abs < 1E6)
-    return String(value / 1E3, 2) + "M";
+    return String(value / 1E3, decimal_places) + "M";
   if (value_abs < 1E9)
-    return String(value / 1E6, 2) + "G";
+    return String(value / 1E6, decimal_places) + "G";
   if (value_abs < 1E12)
-    return String(value / 1E9, 2) + "T";
+    return String(value / 1E9, decimal_places) + "T";
   return "NaN";
 }
 
@@ -429,8 +434,6 @@ void display_meter(const std::vector<float> &scale, const char *units, const cha
   tft.drawString(units, 0, 0, FONT_10PT);
   // Draw the type
   tft.drawRightString(type, DISPLAY_MAX_CX, 0, FONT_10PT);
-
-  //  tft.setTextAlignment(TEXT_ALIGN_CENTER);
 
   auto const min_tick = *std::min_element(scale.begin(), scale.end());
   auto const max_tick = *std::max_element(scale.begin(), scale.end());
@@ -614,14 +617,23 @@ void loop()
     case display_total_s:
       // Calculate total in Sieverts
       tft.drawCentreString(TEXT_TOTAL, DISPLAY_MAX_CX / 2, 0, FONT_10PT);
-      tft.drawCentreString(format_si(impulses * CPM_USH_CONVERSION * 60 / 1E6) + "S", DISPLAY_MAX_CX / 2, 24, FONT_26PT);
+      tft.drawCentreString(format_si(impulses * CPM_USH_CONVERSION * 60 / 1E6, 2) + "S", DISPLAY_MAX_CX / 2, 24, FONT_26PT);
       tft.drawCentreString(format_d_h_m_s(millis() / 1000), DISPLAY_MAX_CX / 2, 54, FONT_10PT);
       break;
 
     case display_info:
-      tft.drawString(TEXT_TUBE TEXT_TUBE_TYPE, 0, 0, FONT_10PT);
-      //      tft.drawXbm(48, 20, 32, 32, radiation_icon);
-      tft.drawString(TEXT_CPM " to " TEXT_USH ": " + String(CPM_USH_CONVERSION, 6), 0, 54, FONT_10PT);
+      tft.setTextColor(TFT_YELLOW);
+      tft.drawCentreString("Geiger Display", DISPLAY_MAX_CX / 2, 0, FONT_26PT);
+      tft.setTextColor(TFT_LIGHTGREY);
+      tft.drawCentreString("by Rene Zeldenthuis", DISPLAY_MAX_CX / 2, 28, FONT_10PT);
+      tft.setTextColor(COLOR_TEXT);
+      tft.drawString(TEXT_INPUT_PIN, 0, 70, FONT_10PT);
+      tft.drawString(String(GPIO_IN_GEIGER), 80, 70, FONT_10PT);
+      tft.drawString(TEXT_TUBE, 0, 84, FONT_10PT);
+      tft.drawString(TEXT_TUBE_TYPE, 80, 84, FONT_10PT);
+      tft.drawString(TEXT_CONVERSION, 0, 98, FONT_10PT);
+      tft.drawString(format_si(CPM_USH_CONVERSION, 6) + " " + TEXT_CPM "/" TEXT_USH, 80, 98, FONT_10PT);
+
       break;
     }
   }
