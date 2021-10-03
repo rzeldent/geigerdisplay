@@ -38,6 +38,6 @@ Also here, there are other, identical looking, screens (avg and max)
 Since startup.
 ![Example Total exposure](assets/20211004_002539.jpg)
 
-# Example image of setting the update speed to slow
+### Example image of setting the update speed to slow
 ![Setting slow updates](assets/20211004_004235.jpg)
 
