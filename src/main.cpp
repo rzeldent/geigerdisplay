@@ -1,5 +1,5 @@
 #include <Arduino.h>
-
+#include <float.h>
 #include "soc/rtc_cntl_reg.h"
 #include <SPI.h>
 // Setting for the display are defined in platformio.ini
@@ -110,8 +110,8 @@ unsigned long max_cpm;
 #define WIFI_SSID "M4011"
 #define WIFI_PASSWORD ""
 
-//DNSServer dnsServer;
-//AsyncWebServer server(80);
+// DNSServer dnsServer;
+// AsyncWebServer server(80);
 
 enum display_mode_t
 {
@@ -374,9 +374,9 @@ String format_value(float value)
   return String(value, 1);
 }
 
-String format_si(double value, byte decimal_places)
+String format_si(double value, const int decimal_places)
 {
-  if (value == 0.0)
+  if (value > -DBL_EPSILON && value < DBL_EPSILON)
     return "0";
 
   if (value < 0)
@@ -384,7 +384,7 @@ String format_si(double value, byte decimal_places)
 
   auto value_abs = fabs(value);
   if (value_abs < 1E-9)
-    return String(value * 1E9, decimal_places) + "p";
+    return String(value * 1E12, decimal_places) + "p";
   if (value_abs < 1E-6)
     return String(value * 1E9, decimal_places) + "n";
   if (value_abs < 1E-3)
@@ -492,7 +492,7 @@ void loop()
   // put your main code here, to run repeatedly:
 
   // WiFi / Web
-  //dnsServer.processNextRequest();
+  // dnsServer.processNextRequest();
 
   // keep watching the push buttons
   button1.loop();
